@@ -1,0 +1,6 @@
+tiktoken
+moviepy
+git+https://github.com/openai/whisper.git
+sagemaker
+pydub
+sentence-transformers
