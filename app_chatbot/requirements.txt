@@ -66,5 +66,6 @@ urllib3==1.26.16
 validators==0.20.0
 yarl==1.9.2
 zipp==3.15.0
-
+unstructured==0.8.1
 transformers~=4.30.2
+faiss-cpu==1.7.4

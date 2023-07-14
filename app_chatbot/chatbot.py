@@ -5,7 +5,8 @@ from streamlit_chat import message
 from langchain.chains import ConversationChain
 from langchain.memory import ConversationBufferMemory
 from langchain.llms.sagemaker_endpoint import LLMContentHandler, SagemakerEndpoint
-from typing import Dict
+from langchain.embeddings.sagemaker_endpoint import EmbeddingsContentHandler
+from typing import Any, Dict, List, Optional
 import json
 from io import StringIO, BytesIO
 from random import randint
@@ -13,11 +14,22 @@ from transformers import AutoTokenizer
 from PIL import Image
 import boto3
 import numpy as np
+import pandas as pd
 import json
 import os
 import base64
+from langchain.embeddings import SagemakerEndpointEmbeddings
+from langchain.indexes import VectorstoreIndexCreator
+from langchain.vectorstores import FAISS
+from langchain.text_splitter import CharacterTextSplitter
+from langchain.document_loaders import DirectoryLoader
+from langchain import PromptTemplate
+from langchain.chains.question_answering import load_qa_chain
 
 client = boto3.client('runtime.sagemaker')
+aws_region = boto3.Session().region_name
+source = []
+
 def query_endpoint_with_json_payload(encoded_json, endpoint_name):
     response = client.invoke_endpoint(EndpointName=endpoint_name, ContentType='application/json', Body=encoded_json)
     return response
@@ -31,12 +43,70 @@ st.set_page_config(page_title="Document Analysis", page_icon=":robot:")
 
 Falcon_endpoint_name = os.getenv("falcon_ep_name", default="falcon-40b-instruct-12xl")
 whisper_endpoint_name = os.getenv('wp_ep_name', default="wisper-large-v2")
+embedding_endpoint_name = os.getenv('embed_ep_name', default="huggingface-textembedding-gpt-j-6b-2023-07-09-12-14-39-348")
 
 endpoint_names = {
     "NLP":Falcon_endpoint_name,
     "Audio":whisper_endpoint_name
 }
 
+################# Prepare for RAG solution #######################
+class SagemakerEndpointEmbeddingsJumpStart(SagemakerEndpointEmbeddings):
+    def embed_documents(self, texts: List[str], chunk_size: int = 5) -> List[List[float]]:
+        """Compute doc embeddings using a SageMaker Inference Endpoint.
+
+        Args:
+            texts: The list of texts to embed.
+            chunk_size: The chunk size defines how many input texts will
+                be grouped together as request. If None, will use the
+                chunk size specified by the class.
+
+        Returns:
+            List of embeddings, one for each text.
+        """
+        results = []
+        _chunk_size = len(texts) if chunk_size > len(texts) else chunk_size
+
+        for i in range(0, len(texts), _chunk_size):
+            response = self._embedding_func(texts[i : i + _chunk_size])
+            print
+            results.extend(response)
+        return results
+
+
+class ContentHandlerEmbed(EmbeddingsContentHandler):
+    content_type = "application/json"
+    accepts = "application/json"
+
+    def transform_input(self, prompt: str, model_kwargs={}) -> bytes:
+        input_str = json.dumps({"text_inputs": prompt, **model_kwargs})
+        return input_str.encode("utf-8")
+
+    def transform_output(self, output: bytes) -> str:
+        response_json = json.loads(output.read().decode("utf-8"))
+        embeddings = response_json["embedding"]
+        return embeddings
+
+
+content_handler_embed = ContentHandlerEmbed()
+
+embeddings = SagemakerEndpointEmbeddingsJumpStart(
+    endpoint_name=embedding_endpoint_name,
+    region_name=aws_region,
+    content_handler=content_handler_embed,
+)
+
+@st.cache_resource
+def generate_index():
+    loader = DirectoryLoader("./data/demo-video-sagemaker-doc/", glob="**/*.txt")
+    documents = loader.load()
+    docsearch = FAISS.from_documents(documents, embeddings)
+    return docsearch
+
+docsearch = generate_index()
+
+
+################# Prepare for chatbot with memory #######################
 
 class ContentHandler(LLMContentHandler):
     content_type = "application/json"
@@ -45,15 +115,15 @@ class ContentHandler(LLMContentHandler):
 
     def transform_input(self, prompt: str, model_kwargs: Dict={}) -> bytes:
         self.len_prompt = len(prompt)
-        input_str = json.dumps({"inputs": prompt, "parameters":{"max_new_tokens": st.session_state.max_token, "temperature":st.session_state.temperature, "seed":st.session_state.seed, "stop": ["Human:"], "num_beams":1}})
+        input_str = json.dumps({"inputs": prompt, "parameters":{"max_new_tokens": st.session_state.max_token, "temperature":st.session_state.temperature, "seed":st.session_state.seed, "stop": ["Human:"], "num_beams":1, "return_full_text": False}})
         print(input_str)
         return input_str.encode('utf-8')
 
     def transform_output(self, output: bytes) -> str:
         response_json = output.read()
         res = json.loads(response_json)
-        print(res)
-        ans = res[0]['generated_text'][self.len_prompt:]
+        # print(res)
+        ans = res[0]['generated_text']#[self.len_prompt:]
         ans = ans[:ans.rfind("Human")].strip()
         
         return ans 
@@ -62,15 +132,15 @@ class ContentHandler(LLMContentHandler):
     
 content_handler = ContentHandler()
 
+llm = SagemakerEndpoint(
+            endpoint_name=Falcon_endpoint_name,
+            region_name="us-east-1",
+            content_handler=content_handler,
+    )
 
 @st.cache_resource
 def load_chain(endpoint_name: str=Falcon_endpoint_name):
 
-    llm = SagemakerEndpoint(
-            endpoint_name=endpoint_name,
-            region_name="us-east-1",
-            content_handler=content_handler,
-    )
     memory = ConversationBufferMemory(return_messages=True)
     chain = ConversationChain(llm=llm, memory=memory)
     return chain
@@ -137,8 +207,8 @@ with st.sidebar:
             st.audio(data, format='audio/webm')
         else:
             st.session_state.option = "NLP"
-    
-    
+            
+    rag = st.checkbox('Use knowledge base')
     
         
     
@@ -162,7 +232,26 @@ with left_column:
         # when the submit button is pressed we send the user query to the chatchain object and save the chat history
         if submit_button and user_input:
             st.session_state.option = "NLP"
-            output = chatchain(user_input)["response"]
+            if rag:
+                # output = index.query(question=user_input, llm=llm)
+                docs = docsearch.similarity_search_with_score(user_input)
+                contexts = []
+                
+                for doc, score in docs:
+                    print(f"Content: {doc.page_content}, Metadata: {doc.metadata}, Score: {score}")
+                    if score <= 0.8:
+                        contexts.append(doc)
+                        source.append(doc.metadata['source'])
+                print(f"\n INPUT CONTEXT:{contexts}")
+                prompt_template = """Use the following pieces of context to answer the question at the end. If you don't know the answer, just say that you don't know, don't try to make up an answer.:\n\n{context}\n\nQuestion: {question}\nHelpful Answer:"""
+                
+                PROMPT = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
+                chain = load_qa_chain(llm=llm, prompt=PROMPT)
+                result = chain({"input_documents": contexts, "question": user_input},
+                               return_only_outputs=True)["output_text"]
+                output = result
+            else:
+                output = chatchain(user_input)["response"]
             print(output)
             st.session_state['past'].append(user_input)
             st.session_state['generated'].append(output)
@@ -190,6 +279,11 @@ with left_column:
                 st.session_state['past'].append("I have uploaded a file. Please confirm that you have read that file.")
                 st.session_state['generated'].append(output)
 
+        if len(source) != 0:
+            df = pd.DataFrame(source, columns=['knowledge source'])
+            st.data_editor(df)
+            source = []
+            
         st.write(f"Currently using a {st.session_state.option} model")
 
 
