@@ -112,7 +112,7 @@ def gen_parag(input_chunks, model_name='all-minilm-l6-v2', p_size=10, order=5):
         timestamps_all += timestamps
     
     # Embed sentences
-    model = SentenceTransformer("all-minilm-l6-v2")
+    model = SentenceTransformer(model_name)
     embeddings = model.encode(sentences_all)
     # Create similarities matrix
     similarities = cosine_similarity(embeddings)
