@@ -42,8 +42,8 @@ st.set_page_config(page_title="Document Analysis", page_icon=":robot:")
 
 
 Falcon_endpoint_name = os.getenv("falcon_ep_name", default="falcon-40b-instruct-12xl")
-whisper_endpoint_name = os.getenv('wp_ep_name', default="wisper-large-v2")
-embedding_endpoint_name = os.getenv('embed_ep_name', default="huggingface-textembedding-gpt-j-6b-2023-07-09-12-14-39-348")
+whisper_endpoint_name = os.getenv('wp_ep_name', default="whisper-large-v2")
+embedding_endpoint_name = os.getenv('embed_ep_name', default="huggingface-textembedding-gpt-j-6b")
 
 endpoint_names = {
     "NLP":Falcon_endpoint_name,
@@ -193,7 +193,7 @@ with st.sidebar:
     clear_button = st.sidebar.button("Clear Conversation", key="clear", on_click=clear_button_fn)
 
     # upload file button
-    uploaded_file = st.sidebar.file_uploader("Upload a file (text, image, or audio)", 
+    uploaded_file = st.sidebar.file_uploader("Upload a file (text or audio)", 
                                              key=st.session_state['widget_key'], 
                                              on_change=on_file_upload,
                                             )
@@ -239,9 +239,9 @@ with left_column:
                 
                 for doc, score in docs:
                     print(f"Content: {doc.page_content}, Metadata: {doc.metadata}, Score: {score}")
-                    if score <= 0.8:
+                    if score <= 0.9:
                         contexts.append(doc)
-                        source.append(doc.metadata['source'])
+                        source.append(doc.metadata['source'].split('/')[-1])
                 print(f"\n INPUT CONTEXT:{contexts}")
                 prompt_template = """Use the following pieces of context to answer the question at the end. If you don't know the answer, just say that you don't know, don't try to make up an answer.:\n\n{context}\n\nQuestion: {question}\nHelpful Answer:"""
                 
