@@ -59,6 +59,8 @@ def activate_similarities(similarities:np.array, p_size=10, order=5)->np.array:
     Returns:
         list: list of weighted sums
     """
+    if similarities.shape[0] < p_size:
+        p_size = similarities.shape[0]
     x = np.linspace(-10,10,p_size)
     # Then we need to apply activation function to the created space
     y = np.vectorize(rev_sigmoid) 

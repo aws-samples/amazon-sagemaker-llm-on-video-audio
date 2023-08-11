@@ -47,7 +47,7 @@ if __name__ == "__main__":
     parser.add_argument("--sentence-embedding-model", type=str, default="all-mpnet-base-v2")
     parser.add_argument("--chunk-length", type=int, default=20)
     parser.add_argument("--p-size", type=int, default=10)
-    parser.add_argument("--order", type=int, default=5)
+    parser.add_argument("--order", type=int, default=2)
     args, _ = parser.parse_known_args()
     
     input_dir = "/opt/ml/processing/input"
